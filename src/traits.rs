@@ -34,7 +34,7 @@ pub trait Bid {
     /// Identifier for items. E.g. strings or integers.
     type Item: Eq;
     /// Quantity of an item. E.g. integers or floats.
-    type Quantity: PartialOrd + AddSubSelf + Zero;
+    type Quantity: PartialOrd + AddSubSelf + Zero + Clone;
 
     /// Get the name of the bidder.
     fn bidder_name(&self) -> &Self::Name;

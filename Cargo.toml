@@ -1,6 +1,6 @@
 [package]
 name        = "vcg-auction"
-version     = "0.1.0"
+version     = "0.2.0"
 authors     = ["daylightwarbler <daylightwarbler@proton.me>"]
 license     = "MIT OR Apache-2.0"
 description = "A Vickrey-Clarke-Groves auction library."
@@ -16,11 +16,11 @@ rust-version = "1.56.1" # probably higher than necessary
 default = ["rand"]
 
 [dependencies]
-itertools = "0.12.1"
 num-traits = "0.2.18"
 rand = { version = "0.8.5", optional = true }
 
 [dev-dependencies]
+pretty_assertions = "1.4.0"
 secrecy = "0.8.0"
 
 [package.metadata.docs.rs]

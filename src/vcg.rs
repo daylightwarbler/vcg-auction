@@ -1,6 +1,7 @@
 //! Main VCG auction implementation.
 
-use itertools::Itertools;
+use std::cmp::Ordering;
+
 use num_traits::Zero;
 #[cfg(feature = "rand")]
 use rand::{thread_rng, Rng};
@@ -27,7 +28,7 @@ pub fn vcg_auction<'a, B: Bid>(
     items: &[(B::Item, B::Quantity)],
     exclusive_bid_sets: &'a [Vec<B>],
 ) -> Option<AuctionResult<'a, B>> {
-    let tiebreaker = |options: &[&Vec<&B>]| {
+    let tiebreaker = |options: &[Vec<&B>]| {
         if !options.is_empty() {
             thread_rng().gen_range::<usize, _>(0..options.len())
         } else {
@@ -45,146 +46,183 @@ pub fn vcg_auction<'a, B: Bid>(
 /// Here's a simple tiebreaker that always returns the first index of zero.
 /// ```
 /// # type Bid = usize; // just to get this to compile
-/// let tiebreak = |_: &[&Vec<&Bid>]| 0;
+/// let tiebreak = |_: &[Vec<&Bid>]| 0;
 /// ```
 ///
 /// [`vcg_auction`] uses a random uniform tiebreaker.
 pub fn vcg_auction_with_tiebreaker<'a, B: Bid>(
     items: &[(B::Item, B::Quantity)],
     exclusive_bid_sets: &'a [Vec<B>],
-    tiebreaker: impl FnOnce(&[&Vec<&B>]) -> usize,
+    tiebreaker: impl FnOnce(&[Vec<&B>]) -> usize,
 ) -> Option<AuctionResult<'a, B>> {
-    let valid_bid_sets = find_all_valid_bid_sets(items, exclusive_bid_sets);
-    let scored_bid_sets = score_bid_sets(valid_bid_sets);
-    let highest_bid_sets = scored_bid_sets.iter().max_set_by_key(|a| &a.0);
+    let exclusive_bid_sets = exclusive_bid_sets
+        .iter()
+        .map(|bs| bs.iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    // multiple sets of bids could be tied for the highest value
+    let (highest_bid_sets, _highest_value) =
+        find_highest_value_bid_sets(items, &exclusive_bid_sets);
     let winning_bid_set = if highest_bid_sets.len() <= 1 {
         highest_bid_sets.get(0)?
     } else {
-        let just_bids =
-            highest_bid_sets.iter().map(|x| &x.1).collect::<Vec<_>>();
-        highest_bid_sets.get(tiebreaker(&just_bids))?
+        highest_bid_sets.get(tiebreaker(&highest_bid_sets))?
     };
-    let payments = calculate_payments(winning_bid_set, &scored_bid_sets);
+    let payments =
+        calculate_payments(winning_bid_set, items, &exclusive_bid_sets);
     Some(AuctionResult {
-        winning_bids: winning_bid_set.1.clone(),
+        winning_bids: winning_bid_set.to_vec(),
         payments,
     })
 }
 
-/// Find all valid sets of bids, given the items to be auctioned and a
-/// collection of bid sets that contain mutually-exclusive bids.
-fn find_all_valid_bid_sets<'a, B: Bid>(
+fn find_highest_value_bid_sets<'a, B: Bid>(
     items: &[(B::Item, B::Quantity)],
-    exclusive_bid_sets: &'a [Vec<B>], // sets of mutually-exclusive bids
-) -> Vec<Vec<&'a B>> {
-    let mut valid_bid_sets = vec![];
-    for i in 0..exclusive_bid_sets.len() + 1 {
-        for exclusive_bid_set_combination in
-            exclusive_bid_sets.iter().combinations(i)
-        {
-            // get all possible bid set combinations for the bidders
-            let bid_sets = exclusive_bid_set_combination
-                .iter()
-                .map(|x| x.iter())
-                .multi_cartesian_product();
-            for bid_set in bid_sets {
-                let is_valid = is_valid_bid_set::<B>(items, &bid_set);
-                if is_valid {
-                    valid_bid_sets.push(bid_set);
-                }
-            }
-        }
-    }
-    valid_bid_sets
-}
-
-/// Determine if a set of bids are valid.
-fn is_valid_bid_set<B: Bid>(
-    items: &[(B::Item, B::Quantity)],
-    bid_set: &[&B],
-) -> bool {
-    // create a new collection of the auction stock with a mutable field so we
-    // can tally up the total items in this bid set and determine if it exceeds
-    // the available items
-    let mut items_tally = items
+    exclusive_bid_sets: &[Vec<&'a B>], // sets of mutually-exclusive bids
+) -> (Vec<Vec<&'a B>>, B::Value) {
+    let mut highest_value_bid_sets: Vec<Vec<&'a B>> = vec![]; // empty
+    let mut highest_value = B::Value::zero();
+    // the items selected so far
+    let items_selected = items
         .iter()
-        .map(|item| (&item.0, &item.1, B::Quantity::zero()))
+        .map(|(item, _)| (item, B::Quantity::zero()))
         .collect::<Vec<_>>();
-    for bid in bid_set {
-        for (bid_item, bid_qty) in bid.bid_items().iter() {
-            if let Some((_, stock_qty, demanded_qty)) =
-                items_tally.iter_mut().find(|i| i.0 == bid_item)
-            {
-                *demanded_qty =
-                    <B::Quantity as AddSubSelf>::add(demanded_qty, bid_qty);
+    // annotate the max possible value of each bid set, used to quickly prune
+    // the solution space
+    let bid_sets_remaining = exclusive_bid_sets
+        .iter()
+        .filter_map(|bs| {
+            bs.iter().map(|b| b.bid_value()).max().map(|max| (bs, max))
+        })
+        .collect::<Vec<_>>();
+    find_highest_value_helper(
+        items,
+        &items_selected,
+        &bid_sets_remaining,
+        &[],
+        B::Value::zero(),
+        &mut highest_value_bid_sets,
+        &mut highest_value,
+    );
+    (highest_value_bid_sets, highest_value)
+}
 
-                if *demanded_qty > **stock_qty {
-                    return false;
-                }
-            }
+/// Finds valid combinations of bids using recursive backtracking to limit the
+/// exploration space where bid combinations are invalid.
+fn find_highest_value_helper<'a, B: Bid>(
+    item_stock: &[(B::Item, B::Quantity)], // max number of items available
+    items_selected: &[(&B::Item, B::Quantity)], // items in selected bids
+    bid_sets_remaining: &[(&Vec<&'a B>, &B::Value)], // bid sets to consider
+    bids_selected: &[&'a B],               // selected bids
+    selected_value: B::Value,
+    highest_value_bid_sets: &mut Vec<Vec<&'a B>>, // highest-scoring bid sets
+    highest_value: &mut B::Value,                 // highest value found
+) {
+    // check that the allocated items is not greater than the stock
+    for i in 0..items_selected.len() {
+        if items_selected[i].1 > item_stock[i].1 {
+            // selected bids not valid -> return without further exploring
+            return;
         }
     }
-    true
+
+    // search reached full depth, check if selected bids are more valuable
+    if bid_sets_remaining.is_empty() {
+        match selected_value.cmp(highest_value) {
+            Ordering::Greater => {
+                *highest_value_bid_sets = vec![bids_selected.to_vec()];
+                *highest_value = selected_value;
+            }
+            Ordering::Equal => {
+                highest_value_bid_sets.push(bids_selected.to_vec());
+            }
+            Ordering::Less => (),
+        }
+        return;
+    }
+
+    // check the possible value achievable with remaining bids
+    let max_remaining_value = bid_sets_remaining
+        .iter()
+        .fold(B::Value::zero(), |sum, (_bs, max_bid_value)| {
+            sum.add(max_bid_value)
+        });
+    let possible_value = selected_value.add(&max_remaining_value);
+    if possible_value < *highest_value {
+        // can't achieve a result with a higher value than we've already
+        // found -> return
+        return;
+    }
+
+    // recurse with next element
+    let (next_bid_set, _max_bid_value) = bid_sets_remaining[0];
+    for bid in next_bid_set {
+        let mut bids_selected_with_new_bid = bids_selected.to_vec();
+        bids_selected_with_new_bid.push(bid);
+        let mut items_selected_with_new_bid = items_selected
+            .iter()
+            .map(|(id, qty)| (*id, qty.clone()))
+            .collect::<Vec<_>>();
+        for (item, qty) in items_selected_with_new_bid.iter_mut() {
+            if let Some((_, bid_qty)) =
+                bid.bid_items().iter().find(|(id, _)| *id == **item)
+            {
+                *qty = qty.add(bid_qty)
+            }
+        }
+        find_highest_value_helper(
+            item_stock,
+            &items_selected_with_new_bid,
+            &bid_sets_remaining[1..],
+            &bids_selected_with_new_bid,
+            selected_value.add(bid.bid_value()),
+            highest_value_bid_sets,
+            highest_value,
+        );
+    }
+    // also recurse without using any bids from this bid set
+    find_highest_value_helper(
+        item_stock,
+        items_selected,
+        &bid_sets_remaining[1..],
+        bids_selected,
+        selected_value,
+        highest_value_bid_sets,
+        highest_value,
+    );
 }
 
-/// Score the total social value of a all the bid sets.
-fn score_bid_sets<B: Bid>(bid_sets: Vec<Vec<&B>>) -> Vec<(B::Value, Vec<&B>)> {
-    bid_sets
-        .into_iter()
-        .map(|bs| {
-            (
-                bs.iter().fold(B::Value::zero(), |acc, b| {
-                    <B::Value as AddSubSelf>::add(&acc, b.bid_value())
-                }),
-                bs,
-            )
-        })
-        .collect::<Vec<_>>()
-}
-
-/// Calculate the payments each winning bidder makes given the winning bid set
-/// and all other valid bid sets.
+/// Calculate the payments each winning bidder makes given the winning bid set.
 fn calculate_payments<'a, B: Bid>(
-    winning_bid_set: &(B::Value, Vec<&'a B>),
-    scored_bid_sets: &[(B::Value, Vec<&'a B>)],
+    winning_bid_set: &[&'a B],
+    items: &[(B::Item, B::Quantity)],
+    exclusive_bid_sets: &[Vec<&'a B>], // sets of mutually-exclusive bids
 ) -> Vec<(&'a B::Name, B::Value)> {
     let mut payments = vec![];
-    let zero = B::Value::zero();
-    for winning_bid in &winning_bid_set.1 {
-        if payments
-            .iter()
-            .any(|(name, _)| *name == winning_bid.bidder_name())
-        {
+    for winning_bid in winning_bid_set {
+        let bidder_name = winning_bid.bidder_name();
+        if payments.iter().any(|(name, _)| *name == bidder_name) {
             // already calculated this bidder's payment
             continue;
         }
         // find the auction value without this bidder
-        let auction_value_without_bidder = scored_bid_sets
+        let bid_sets_without_bidder = exclusive_bid_sets
             .iter()
-            .filter(|sbs| {
-                !sbs.1
-                    .iter()
-                    .any(|b| *b.bidder_name() == *winning_bid.bidder_name())
+            .map(|bs| {
+                bs.iter()
+                    .filter(|b| *b.bidder_name() != *bidder_name)
+                    .copied()
+                    .collect::<Vec<_>>()
             })
-            .max_by_key(|sbs| &sbs.0)
-            .map(|sbs| &sbs.0)
-            .unwrap_or(&zero);
-        // since the same bidder can make multiple unrelated bids that are not
-        // mutually-exclusive (as a convenient alternative to listing all the
-        // combinations in one bid set), we consider these separated bids as a
-        // single bid to determine the total value of the bidder's winning bids
-        let value_of_bidders_bids = winning_bid_set
-            .1
+            .collect::<Vec<_>>();
+        let auction_value_without_bidder =
+            find_highest_value_bid_sets(items, &bid_sets_without_bidder).1;
+        // find the value of the bids placed by other bidders
+        let value_of_other_bids = winning_bid_set
             .iter()
-            .filter(|b| *b.bidder_name() == *winning_bid.bidder_name())
-            .fold(B::Value::zero(), |acc, b| {
-                <B::Value as AddSubSelf>::add(&acc, b.bid_value())
-            });
-        // invariant: these subtractions never underflow on unsigned types
-        let auction_value_without_bid =
-            winning_bid_set.0.sub(&value_of_bidders_bids);
-        let payment =
-            auction_value_without_bidder.sub(&auction_value_without_bid);
+            .filter(|b| *b.bidder_name() != *bidder_name)
+            .fold(B::Value::zero(), |acc, b| acc.add(b.bid_value()));
+        // invariant: this subtraction never underflows on unsigned types
+        let payment = auction_value_without_bidder.sub(&value_of_other_bids);
         payments.push((winning_bid.bidder_name(), payment));
     }
     payments

@@ -34,8 +34,8 @@
 //! mutually-exclusive, and no outcome is considered where both bids win. Even
 //! if three chairs were available, Alice couldn't win all three.
 //!
-//! Bob's bid is in another bid set, so any combination of Bob's bid with at
-//! most one of Alice's bids is valid.
+//! Bob's bid is in another bid set, so any combination of Bob's bid with one of
+//! Alice's bids is valid.
 //!
 //! Mutually-exclusive bids let bidders express their demand curves when
 //! their valuations are different for different combinations of items.
@@ -51,12 +51,15 @@
 //!     ],
 //!     [
 //!         (Alice, 10, [(table, 1)])
+//!     ],
+//!     [
+//!         (Bob, 20, [(chair, 1), (table, 1)])
 //!     ]
 //! ]
 //! ```
 //!
 //! Here Alice wants a chair for 5, a table for 10, or a table and a chair for
-//! 15.
+//! 15. Bob only wants the chair and table together for 20.
 //!
 //! Similarly, if bidders are mutually-exclusive they can be put into the same
 //! bid set. If Bob and Carol wouldn't want to win a chair if the other person
@@ -78,45 +81,7 @@
 //! # Example
 //!
 //! ```
-//! use vcg_auction::vcg_auction;
-//!
-//! #[derive(Debug, PartialEq)]
-//! struct Bid {
-//!     name: String,
-//!     value: u64,
-//!     items: Vec<(String, u64)>,
-//! }
-//!
-//! impl Bid {
-//!     fn new(
-//!         name: impl Into<String>,
-//!         value: u64,
-//!         items: Vec<(String, u64)>,
-//!     ) -> Self {
-//!         Self {
-//!             name: name.into(),
-//!             value,
-//!             items,
-//!         }
-//!     }
-//! }
-//!
-//! impl vcg_auction::Bid for Bid {
-//!     type Name = String;
-//!     type Value = u64;
-//!     type Item = String;
-//!     type Quantity = u64;
-//!
-//!     fn bidder_name(&self) -> &Self::Name {
-//!         &self.name
-//!     }
-//!     fn bid_value(&self) -> &Self::Value {
-//!         &self.value
-//!     }
-//!     fn bid_items(&self) -> &[(Self::Item, Self::Quantity)] {
-//!         &self.items
-//!     }
-//! }
+//! use vcg_auction::{vcg_auction, types::SimpleBid};
 //!
 //! # // Function wrapper lets us avoid unwrap() in the doc example.
 //! #
@@ -125,33 +90,41 @@
 //! # fn run_example() -> Option<()> {
 //!
 //! // Two chairs up for auction.
-//! let items = vec![("chair".into(), 2)];
-//! let bids = vec![
+//! let items = vec![("chair".to_string(), 2)];
+//! let bids = [
 //!     vec![
-//!         Bid::new("Alice", 5, vec![("chair".into(), 1)]),
-//!         Bid::new("Alice", 7, vec![("chair".into(), 2)]),
+//!         SimpleBid::new("Alice", 5, [("chair", 1)]),
+//!         SimpleBid::new("Alice", 7, [("chair", 2)]),
 //!     ],
-//!     vec![Bid::new("Bob", 4, vec![("chair".into(), 1)])],
+//!     vec![SimpleBid::new("Bob", 4, [("chair", 1)])],
 //! ];
 //! let result = vcg_auction(&items, &bids)?;
+//!
 //! // Alice and Bob each win a chair.
 //! assert_eq!(result.winning_bids, [&bids[0][0], &bids[1][0]]);
 //! // Bob's participation in the auction prevented Alice from getting a second
 //! // chair for an additional value of 2, so Bob only pays 2. Alice pays
 //! // nothing since her participation didn't prevent any other valuable
 //! // outcomes.
-//! assert_eq!(result.payments, [(&"Alice".into(), 0), (&"Bob".into(), 2)]);
+//! assert_eq!(
+//!     result.payments,
+//!     [(&"Alice".to_string(), 0), (&"Bob".to_string(), 2)]
+//! );
 //!
 //! // Example from the VCG auction Wikipedia page.
-//! let items = vec![("apple".into(), 2)];
+//! let items = vec![("apple".to_string(), 2)];
 //! let bids = vec![
-//!     vec![Bid::new("Alice", 5, vec![("apple".into(), 1)])],
-//!     vec![Bid::new("Bob", 2, vec![("apple".into(), 1)])],
-//!     vec![Bid::new("Carol", 6, vec![("apple".into(), 2)])],
+//!     vec![SimpleBid::new("Alice", 5, [("apple", 1)])],
+//!     vec![SimpleBid::new("Bob", 2, [("apple", 1)])],
+//!     vec![SimpleBid::new("Carol", 6, [("apple", 2)])],
 //! ];
 //! let result = vcg_auction(&items, &bids)?;
+//!
 //! assert_eq!(result.winning_bids, [&bids[0][0], &bids[1][0]]);
-//! assert_eq!(result.payments, [(&"Alice".into(), 4), (&"Bob".into(), 1)]);
+//! assert_eq!(
+//!     result.payments,
+//!     [(&"Alice".to_string(), 4), (&"Bob".to_string(), 1)]
+//! );
 //!
 //! #     Some(())
 //! # }
@@ -169,6 +142,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod traits;
+pub mod types;
 mod vcg;
 
 pub use traits::*;

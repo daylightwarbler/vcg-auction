@@ -1,49 +1,13 @@
-use vcg_auction::{vcg_auction, vcg_auction_with_tiebreaker};
+use pretty_assertions::assert_eq;
 
-#[derive(Debug, PartialEq)]
-struct Bid {
-    name: String,
-    value: u64,
-    items: Vec<(String, u64)>,
-}
-
-impl Bid {
-    fn new(
-        name: impl Into<String>,
-        value: u64,
-        items: Vec<(String, u64)>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            value,
-            items,
-        }
-    }
-}
-
-impl vcg_auction::Bid for Bid {
-    type Name = String;
-    type Value = u64;
-    type Item = String;
-    type Quantity = u64;
-
-    fn bidder_name(&self) -> &Self::Name {
-        &self.name
-    }
-    fn bid_value(&self) -> &Self::Value {
-        &self.value
-    }
-    fn bid_items(&self) -> &[(Self::Item, Self::Quantity)] {
-        &self.items
-    }
-}
+use vcg_auction::{types::SimpleBid, vcg_auction, vcg_auction_with_tiebreaker};
 
 #[test]
 fn vickrey_case() {
     let items = vec![("chair".into(), 1)];
-    let bids = vec![
-        vec![Bid::new("Alice", 10, vec![("chair".into(), 1)])],
-        vec![Bid::new("Bob", 20, vec![("chair".into(), 1)])],
+    let bids = [
+        vec![SimpleBid::new("Alice", 10, [("chair", 1)])],
+        vec![SimpleBid::new("Bob", 20, [("chair", 1)])],
     ];
     let result = vcg_auction(&items, &bids).unwrap();
     assert_eq!(result.winning_bids, [&bids[1][0]]);
@@ -53,16 +17,29 @@ fn vickrey_case() {
 #[test]
 fn simple_case() {
     let items = vec![("chair".into(), 2)];
-    let bids = vec![
+    let bids = [
         vec![
-            Bid::new("Alice", 5, vec![("chair".into(), 1)]),
-            Bid::new("Alice", 7, vec![("chair".into(), 2)]),
+            SimpleBid::new("Alice", 5, [("chair", 1)]),
+            SimpleBid::new("Alice", 7, [("chair", 2)]),
         ],
-        vec![Bid::new("Bob", 4, vec![("chair".into(), 1)])],
+        vec![SimpleBid::new("Bob", 4, [("chair", 1)])],
     ];
     let result = vcg_auction(&items, &bids).unwrap();
     assert_eq!(result.winning_bids, [&bids[0][0], &bids[1][0]]);
     assert_eq!(result.payments, [(&"Alice".into(), 0), (&"Bob".into(), 2)]);
+}
+
+#[test]
+fn non_exclusive_bids() {
+    let items = vec![("chair".into(), 1), ("table".into(), 1)];
+    let bids = vec![
+        vec![SimpleBid::new("Alice", 5, [("chair", 1)])],
+        vec![SimpleBid::new("Alice", 10, [("table", 1)])],
+        vec![SimpleBid::new("Bob", 20, [("chair", 1), ("table", 1)])],
+    ];
+    let result = vcg_auction(&items, &bids).unwrap();
+    assert_eq!(result.winning_bids, [&bids[2][0]]);
+    assert_eq!(result.payments, [(&"Bob".into(), 15)]);
 }
 
 /// Example from the Wikipedia page
@@ -70,9 +47,9 @@ fn simple_case() {
 fn wikipedia_example() {
     let items = vec![("apple".into(), 2)];
     let bids = vec![
-        vec![Bid::new("Alice", 5, vec![("apple".into(), 1)])],
-        vec![Bid::new("Bob", 2, vec![("apple".into(), 1)])],
-        vec![Bid::new("Carol", 6, vec![("apple".into(), 2)])],
+        vec![SimpleBid::new("Alice", 5, [("apple", 1)])],
+        vec![SimpleBid::new("Bob", 2, [("apple", 1)])],
+        vec![SimpleBid::new("Carol", 6, [("apple", 2)])],
     ];
     let result = vcg_auction(&items, &bids).unwrap();
     assert_eq!(result.winning_bids, [&bids[0][0], &bids[1][0]]);
@@ -83,10 +60,10 @@ fn wikipedia_example() {
 fn mutually_exclusive_bidders() {
     let items = vec![("chair".into(), 2)];
     let bids = vec![
-        vec![Bid::new("Alice", 5, vec![("chair".into(), 1)])],
+        vec![SimpleBid::new("Alice", 5, [("chair", 1)])],
         vec![
-            Bid::new("Bob", 4, vec![("chair".into(), 1)]),
-            Bid::new("Carol", 3, vec![("chair".into(), 1)]),
+            SimpleBid::new("Bob", 4, [("chair", 1)]),
+            SimpleBid::new("Carol", 3, [("chair", 1)]),
         ],
     ];
     let result = vcg_auction(&items, &bids).unwrap();
@@ -97,15 +74,17 @@ fn mutually_exclusive_bidders() {
 #[test]
 fn no_valid_bids() {
     let items = vec![("apple".into(), 2)];
-    let no_bid_cases: &[Vec<Vec<Bid>>] = &[
+    let no_bid_cases: &[Vec<Vec<SimpleBid>>] = &[
         vec![],
         vec![vec![]],
         vec![vec![], vec![]],
         // Alice wants 3 apples, but only 2 are available
-        vec![vec![Bid::new("Alice", 5, vec![("apple".into(), 3)])]],
+        vec![vec![SimpleBid::new("Alice", 5, [("apple", 3)])]],
     ];
     for no_bid_case in no_bid_cases {
-        assert!(vcg_auction(&items, no_bid_case).is_none());
+        let result = vcg_auction(&items, no_bid_case).unwrap();
+        assert!(result.winning_bids.is_empty());
+        assert!(result.payments.is_empty());
     }
 }
 
@@ -113,11 +92,11 @@ fn no_valid_bids() {
 fn simple_tiebreaker() {
     let items = vec![("chair".into(), 1)];
     let bids = vec![
-        vec![Bid::new("Alice", 10, vec![("chair".into(), 1)])],
-        vec![Bid::new("Bob", 10, vec![("chair".into(), 1)])],
+        vec![SimpleBid::new("Alice", 10, vec![("chair", 1)])],
+        vec![SimpleBid::new("Bob", 10, vec![("chair", 1)])],
     ];
     // tiebreak favors Bob
-    let tiebreak = |_: &[&Vec<&Bid>]| 1;
+    let tiebreak = |_: &[Vec<&SimpleBid>]| 1;
     let result = vcg_auction_with_tiebreaker(&items, &bids, tiebreak).unwrap();
     assert_eq!(result.winning_bids, [&bids[1][0]]);
     assert_eq!(result.payments, [(&"Bob".into(), 10),]);
@@ -128,9 +107,9 @@ fn unrelated_bids_same_bidder() {
     let items = vec![("chair".into(), 2), ("table".into(), 1)];
     let bids = vec![
         // Alice wants the chairs and the table independently of each other
-        vec![Bid::new("Alice", 10, vec![("chair".into(), 2)])],
-        vec![Bid::new("Alice", 5, vec![("table".into(), 1)])],
-        vec![Bid::new("Bob", 4, vec![("table".into(), 1)])],
+        vec![SimpleBid::new("Alice", 10, vec![("chair", 2)])],
+        vec![SimpleBid::new("Alice", 5, vec![("table", 1)])],
+        vec![SimpleBid::new("Bob", 4, vec![("table", 1)])],
     ];
     let result = vcg_auction(&items, &bids).unwrap();
     assert_eq!(result.winning_bids, [&bids[0][0], &bids[1][0]]);

@@ -9,7 +9,8 @@ encourages truthful bidding by only charging bidders their externality—the
 value of the best alternative outcome had the bidder not participated. In its
 exact form, it’s a combinatorial auction that is computationally hard to
 compute for large problem sizes. Nevertheless, small problems are certainly
-possible to compute by exhaustive search, and that's what this library does.
+possible to compute by exhaustive search, and that's what this library
+currently supports.
 
 There's many computationally-feasible simulations of the VCG auction that can
 scale better for practical use cases, like the Simultaneous Ascending Auction
